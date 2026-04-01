@@ -8,8 +8,11 @@ if TYPE_CHECKING:
     from llm import ModelClient
 
 SearchAgentRunner = Callable[[list[str]], Awaitable[list[dict[str, str]]]]
+StatusRenderer = Callable[[dict[str, str]], None]
+TodoRenderer = Callable[[list[str]], None]
 Mode: TypeAlias = Literal["plan", "execute"]
 Provider: TypeAlias = Literal["anthropic", "gemini", "openai"]
+ImageProvider: TypeAlias = Literal["auto", "gemini", "openai"]
 
 
 @dataclass(slots=True)
@@ -92,6 +95,9 @@ class AgentContext:
     model_client: "ModelClient | None" = None
     search_agent_runner: SearchAgentRunner | None = None
     live: Any | None = None
-    subagent_statuses: dict[str, str] = field(default_factory=dict)
+    activity_statuses: dict[str, str] = field(default_factory=dict)
+    render_activity_statuses: StatusRenderer | None = None
+    render_todos: TodoRenderer | None = None
     workspace_root: Path = field(default_factory=Path.cwd)
     openscad_image: str = "3d-print-assistant-openscad"
+    preferred_image_provider: ImageProvider = "auto"

@@ -1,5 +1,8 @@
 import asyncio
+import base64
+import os
 import shlex
+import uuid
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +15,7 @@ from state import AgentContext, RunState
 
 ArgsT = TypeVar("ArgsT", bound=BaseModel)
 MAX_DELEGATED_QUERIES = 3
+DOCKER_TIMEOUT_SECONDS = 120
 TODAY = datetime.now().strftime("%d %B %Y")
 
 
@@ -76,6 +80,14 @@ class OpenScadMetadata:
     stderr: str
 
 
+@dataclass(slots=True)
+class ConceptImageMetadata:
+    provider: Literal["gemini", "openai"]
+    model: str
+    output_path: str
+    prompt: str
+
+
 ToolMetadata: TypeAlias = (
     BashMetadata
     | DelegateSearchMetadata
@@ -83,6 +95,7 @@ ToolMetadata: TypeAlias = (
     | GeneratePlanMetadata
     | ModifyTodoMetadata
     | OpenScadMetadata
+    | ConceptImageMetadata
     | ReadFileMetadata
     | SearchWebMetadata
     | WriteFileMetadata
@@ -464,6 +477,280 @@ class RenderScadArgs(BaseModel):
     view: Literal["axes", "crosshairs", "edges", "scales"] | None = None
 
 
+class GenerateConceptImageArgs(BaseModel):
+    prompt: str = Field(
+        ...,
+        min_length=1,
+        description="Prompt describing the concept image to generate.",
+    )
+    output_path: str = Field(
+        ...,
+        description="Destination PNG path in the workspace.",
+    )
+    provider: Literal["auto", "gemini", "openai"] = Field(
+        "auto",
+        description="Image generation provider. Use auto to pick from the configured/default provider.",
+    )
+
+
+async def _run_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int = 30,
+    context: AgentContext | None = None,
+    status_key: str | None = None,
+    cleanup_command: list[str] | None = None,
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    async def read_stream(
+        stream: asyncio.StreamReader | None,
+        chunks: list[str],
+        label: str,
+    ) -> None:
+        if stream is None:
+            return
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace")
+            chunks.append(text)
+            stripped = text.strip()
+            if (
+                stripped
+                and context is not None
+                and status_key is not None
+            ):
+                _set_activity_status(context, status_key, f"{label}: {truncate_status(stripped)}")
+
+    stdout_task = asyncio.create_task(read_stream(process.stdout, stdout_chunks, "stdout"))
+    stderr_task = asyncio.create_task(read_stream(process.stderr, stderr_chunks, "stderr"))
+    try:
+        await asyncio.wait_for(
+            process.wait(),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        if cleanup_command is not None:
+            cleanup = await asyncio.create_subprocess_exec(
+                *cleanup_command,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await cleanup.communicate()
+        await asyncio.gather(stdout_task, stderr_task)
+        stdout = "".join(stdout_chunks).strip()
+        stderr = "".join(stderr_chunks).strip()
+        timeout_stderr = f"Command timed out after {timeout_seconds} seconds."
+        if stderr:
+            timeout_stderr = f"{timeout_stderr}\n{stderr}"
+        return 124, stdout, timeout_stderr
+
+    await asyncio.gather(stdout_task, stderr_task)
+    stdout = "".join(stdout_chunks).strip()
+    stderr = "".join(stderr_chunks).strip()
+    return process.returncode or 0, stdout, stderr
+
+
+def truncate_status(text: str, max_length: int = 72) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_length:
+        return normalized
+    return f"{normalized[: max_length - 3].rstrip()}..."
+
+
+def _resolve_image_provider(
+    requested: Literal["auto", "gemini", "openai"],
+    context: AgentContext,
+) -> Literal["gemini", "openai"]:
+    if requested in {"gemini", "openai"}:
+        return requested
+    if context.preferred_image_provider in {"gemini", "openai"}:
+        return context.preferred_image_provider
+    if os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    raise RuntimeError(
+        "No image generation provider is configured. Set GEMINI_API_KEY or OPENAI_API_KEY."
+    )
+
+
+async def generate_concept_image(
+    args: GenerateConceptImageArgs,
+    state: RunState,
+    context: AgentContext,
+) -> ToolExecutionResult:
+    del state
+    if not args.output_path.lower().endswith(".png"):
+        return ToolExecutionResult(
+            model_response={"error": "Concept image output_path must end with .png."}
+        )
+
+    try:
+        destination_path = _resolve_workspace_path(args.output_path, context)
+    except ValueError as error:
+        return ToolExecutionResult(model_response={"error": str(error)})
+
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    output_relative = _workspace_relative_path(destination_path, context)
+
+    try:
+        provider = _resolve_image_provider(args.provider, context)
+    except RuntimeError as error:
+        return ToolExecutionResult(model_response={"error": str(error)})
+
+    status_key = f"image: {Path(output_relative).name}"
+    _set_activity_status(context, status_key, f"Generating with {provider}")
+
+    try:
+        if provider == "openai":
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = await client.images.generate(
+                model="gpt-image-1",
+                prompt=args.prompt,
+                size="1536x1024",
+            )
+            image_b64 = response.data[0].b64_json
+            if not image_b64:
+                raise RuntimeError("OpenAI image response did not contain image bytes.")
+            image_bytes = base64.b64decode(image_b64)
+            model_name = "gpt-image-1"
+        else:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model="gemini-2.5-flash-image",
+                contents=args.prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"]
+                ),
+            )
+            image_bytes: bytes | None = None
+            for candidate in response.candidates or []:
+                content = getattr(candidate, "content", None)
+                if content is None:
+                    continue
+                for part in content.parts or []:
+                    inline_data = getattr(part, "inline_data", None)
+                    if inline_data and getattr(inline_data, "data", None):
+                        image_bytes = inline_data.data
+                        break
+                if image_bytes is not None:
+                    break
+            if image_bytes is None:
+                raise RuntimeError("Gemini image response did not contain image bytes.")
+            model_name = "gemini-2.5-flash-image"
+
+        destination_path.write_bytes(image_bytes)
+    except Exception as error:
+        _set_activity_status(context, status_key, f"Failed: {truncate_status(str(error))}")
+        return ToolExecutionResult(
+            model_response={"error": f"Concept image generation failed: {error}"}
+        )
+
+    _set_activity_status(context, status_key, "Succeeded")
+    return ToolExecutionResult(
+        model_response={
+            "result": "Concept image generated successfully.",
+            "provider": provider,
+            "model": model_name,
+            "output_path": output_relative,
+        },
+        metadata=ConceptImageMetadata(
+            provider=provider,
+            model=model_name,
+            output_path=output_relative,
+            prompt=args.prompt,
+        ),
+    )
+
+
+def _set_activity_status(context: AgentContext, key: str, status: str) -> None:
+    context.activity_statuses[key] = status
+    if context.render_activity_statuses is not None:
+        context.render_activity_statuses(dict(context.activity_statuses))
+
+
+async def _ensure_openscad_image(context: AgentContext) -> tuple[bool, str]:
+    status_key = "docker: openscad-image"
+    _set_activity_status(context, status_key, "Checking image availability")
+    inspect_command = ["docker", "image", "inspect", context.openscad_image]
+    inspect_returncode, _, inspect_stderr = await _run_command(
+        inspect_command,
+        cwd=context.workspace_root,
+        timeout_seconds=DOCKER_TIMEOUT_SECONDS,
+        context=context,
+        status_key=status_key,
+    )
+    if inspect_returncode == 0:
+        _set_activity_status(context, status_key, "Image ready")
+        return True, ""
+
+    build_command = [
+        "docker",
+        "build",
+        "-t",
+        context.openscad_image,
+        "-f",
+        "docker/openscad/Dockerfile",
+        ".",
+    ]
+    _set_activity_status(context, status_key, "Image missing, building from Dockerfile")
+    build_returncode, build_stdout, build_stderr = await _run_command(
+        build_command,
+        cwd=context.workspace_root,
+        timeout_seconds=DOCKER_TIMEOUT_SECONDS,
+        context=context,
+        status_key=status_key,
+    )
+    if build_returncode == 0:
+        details = "Docker image was missing and has been built automatically."
+        if build_stdout:
+            details = f"{details}\n{build_stdout}"
+        _set_activity_status(context, status_key, "Image built successfully")
+        return True, details
+
+    detail_chunks = [
+        f"Missing Docker image: {context.openscad_image}",
+        "Tried to build it automatically with:",
+        " ".join(shlex.quote(item) for item in build_command),
+    ]
+    if inspect_stderr:
+        detail_chunks.append(f"inspect stderr:\n{inspect_stderr}")
+    if build_stdout:
+        detail_chunks.append(f"build stdout:\n{build_stdout}")
+    if build_stderr:
+        detail_chunks.append(f"build stderr:\n{build_stderr}")
+    if build_returncode == 124:
+        _set_activity_status(
+            context,
+            status_key,
+            f"Build timed out after {DOCKER_TIMEOUT_SECONDS}s",
+        )
+    else:
+        _set_activity_status(context, status_key, "Build failed")
+    return False, "\n\n".join(detail_chunks)
+
+
 async def _run_openscad(
     *,
     action: Literal["export_stl", "render_scad", "validate_scad"],
@@ -472,6 +759,7 @@ async def _run_openscad(
     extra_args: list[str],
     context: AgentContext,
 ) -> ToolExecutionResult:
+    status_key = f"docker: {action} {Path(input_path).name}"
     try:
         source_path = _resolve_workspace_path(input_path, context)
         source_relative = _workspace_relative_path(source_path, context)
@@ -490,38 +778,75 @@ async def _run_openscad(
     except ValueError as error:
         return ToolExecutionResult(model_response={"error": str(error)})
 
+    image_ready, image_message = await _ensure_openscad_image(context)
+    if not image_ready:
+        _set_activity_status(context, status_key, "Blocked: image unavailable")
+        return ToolExecutionResult(
+            model_response={
+                "error": f"OpenSCAD Docker image is unavailable.\n\n{image_message}",
+            }
+        )
+
     docker_command = [
         "docker",
         "run",
         "--rm",
+        "--name",
+        f"openscad-{action}-{uuid.uuid4().hex[:8]}",
         "-v",
         f"{context.workspace_root.resolve()}:/workspace",
         "-w",
         "/workspace",
         context.openscad_image,
-        "xvfb-run",
-        "-a",
-        "openscad",
-        *extra_args,
     ]
+    container_name = docker_command[4]
 
+    openscad_args = list(extra_args)
     if destination_relative is None:
-        docker_command.extend(["-o", "/tmp/validate-output.stl", source_relative])
+        openscad_args.extend(["-o", "/tmp/validate-output.stl", source_relative])
     else:
-        docker_command.extend(["-o", destination_relative, source_relative])
+        openscad_args.extend(["-o", destination_relative, source_relative])
 
-    process = await asyncio.create_subprocess_exec(
-        *docker_command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    if action == "render_scad":
+        rendered_command = " ".join(
+            shlex.quote(part) for part in ["openscad", *openscad_args]
+        )
+        docker_command.extend(
+            [
+                "sh",
+                "-lc",
+                (
+                    "Xvfb :99 -screen 0 1024x768x24 >/tmp/xvfb.log 2>&1 & "
+                    f"export DISPLAY=:99 && {rendered_command}; "
+                    "code=$?; cat /tmp/xvfb.log; exit $code"
+                ),
+            ]
+        )
+    else:
+        docker_command.extend(["openscad", *openscad_args])
+
+    _set_activity_status(context, status_key, "Starting container")
+    returncode, stdout, stderr = await _run_command(
+        docker_command,
+        cwd=context.workspace_root,
+        timeout_seconds=DOCKER_TIMEOUT_SECONDS,
+        context=context,
+        status_key=status_key,
+        cleanup_command=["docker", "rm", "-f", container_name],
     )
-    stdout_bytes, stderr_bytes = await process.communicate()
-    stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
-    stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
-    returncode = process.returncode or 0
     command_text = " ".join(shlex.quote(item) for item in docker_command)
+    if image_message:
+        stdout = f"{image_message}\n\n{stdout}".strip()
 
     if returncode != 0:
+        if returncode == 124:
+            _set_activity_status(
+                context,
+                status_key,
+                f"Timed out after {DOCKER_TIMEOUT_SECONDS}s",
+            )
+        else:
+            _set_activity_status(context, status_key, f"Failed with exit code {returncode}")
         return ToolExecutionResult(
             model_response={
                 "error": (
@@ -542,6 +867,7 @@ async def _run_openscad(
             ),
         )
 
+    _set_activity_status(context, status_key, "Succeeded")
     return ToolExecutionResult(
         model_response={
             "result": f"OpenSCAD {action} succeeded.",
@@ -746,43 +1072,67 @@ GENERATE_PLAN_TOOL = Tool(
     handler=generate_plan,
 )
 
+GENERATE_CONCEPT_IMAGE_TOOL = Tool(
+    name="generate_concept_image",
+    description="Generate a concept image for the design and save it to a workspace PNG file.",
+    args_model=GenerateConceptImageArgs,
+    handler=generate_concept_image,
+)
+
 
 PLAN_INSTRUCTION = """
-You are Koroku, a 3D printing design-planning assistant.
+You are a 3D printing design-planning assistant.
 Today's date is {today}.
 
 When the user asks for a part, assembly, or design analysis task:
 - clarify the design intent, dimensions, printer constraints, material, and success criteria
 - ask concise follow-up questions only when they materially affect the design
 - generate an execution plan once enough detail is available
+- default all generated SCAD, STL, PNG, test, and helper files to the output/ directory unless the user asks otherwise
+- always plan to write a specification markdown file in output/ that captures requirements, assumptions, constraints, and decisions
+- always plan to generate at least one concept image in output/ before or alongside the first major CAD pass
 
 The execution plan should focus on practical CAD and validation work, not research writing.
 Use the generate_plan tool when you have enough information to start.
 Keep todos concrete and implementation-oriented.
+If you need the user to answer a blocking question, ask it plainly and stop. Do not continue execution in the same turn after asking.
 """.strip().format(today=TODAY)
 
 SYSTEM_INSTRUCTION = """
-You are Kuroko, a 3D printing design assistant. Today's date is {today}.
+You are a 3D printing design assistant. Today's date is {today}.
 
 Your job is to help the user plan, generate, inspect, and iterate OpenSCAD-based 3D-print designs.
 
 Core behavior:
 1. Use modify_todo to track design steps and validation work.
 2. Clarify missing requirements when they affect geometry, fit, printer compatibility, or printability.
-3. Write and patch OpenSCAD files incrementally using write_file and edit_file.
-4. Validate OpenSCAD before claiming a design iteration is good.
-5. Use validate_scad after significant SCAD edits.
-6. Use export_stl and render_scad when you need artifacts for validation or delivery.
-7. Keep outputs grounded in printer constraints, wall thickness, tolerances, and manufacturability.
-8. Use bash only for local inspection or non-destructive checks.
-9. If web search is helpful for a standard, spec, or part reference, use delegate_search or search_web, but do not depend on it by default.
-10. Do not produce long research reports. Focus on design decisions, CAD changes, validation results, and next actions.
+3. Always create and maintain a specification markdown file in output/ for the active design. It should capture the design brief, dimensions, printer/material constraints, assumptions, open questions, validation criteria, and the current design direction.
+4. Generate at least one concept image in output/ for the active design using generate_concept_image unless the user explicitly says to skip imagery.
+5. Write and patch OpenSCAD files incrementally using write_file and edit_file.
+6. Validate OpenSCAD before claiming a design iteration is good.
+7. Use validate_scad after significant SCAD edits.
+8. Use export_stl and render_scad when you need artifacts for validation or delivery.
+9. Keep outputs grounded in printer constraints, wall thickness, tolerances, and manufacturability.
+10. Use bash only for local inspection or non-destructive checks.
+11. If web search is helpful for a standard, spec, or part reference, use delegate_search or search_web, but do not depend on it by default.
+12. Do not produce long research reports. Focus on design decisions, CAD changes, validation results, and next actions.
+13. Keep generated project artifacts organized under output/ by default. New SCAD entry files should normally be created in output/.
+14. When you need validation helpers or regression checks, prefer creating small Python test or analysis scripts in output/ and run them with bash.
+15. Keep iteration counts under control. Avoid unnecessary loops, and converge quickly once the design satisfies the stated constraints.
+16. Use delegate_search only for genuinely distinct research questions that improve the design or validation strategy.
+17. If OpenSCAD export or render fails because the Docker image is missing, retry after ensuring the image is built rather than stopping at the first missing-image error.
+18. If you need human input to proceed, ask a concise blocking question and end the turn immediately. Prefix the message with `USER_INPUT_REQUIRED:` so the runtime yields control back to the user.
 
 Execution style:
 - Work iteratively.
 - Prefer minimal SCAD patches instead of full rewrites when a file already exists.
 - Surface validation failures clearly and fix them before moving on.
 - If a design assumption is necessary, state it briefly and proceed.
+- When creating a new SCAD file without a user-specified path, use output/<descriptive_name>.scad.
+- When creating the spec file without a user-specified path, use output/<descriptive_name>_spec.md.
+- When creating the concept image without a user-specified path, use output/<descriptive_name>_concept.png.
+- When exporting artifacts without a user-specified path, prefer output/<matching_name>.stl and output/<matching_name>.png.
+- When a design has hard dimensional constraints, create and run small checks that verify those constraints from the SCAD parameters or exported geometry when practical.
 """.strip().format(today=TODAY)
 
 SEARCH_SUBAGENT_SYSTEM_INSTRUCTION = """

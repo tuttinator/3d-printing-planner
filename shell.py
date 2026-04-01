@@ -7,7 +7,7 @@ from rich.console import RenderableType
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.widgets import Input, Static
+from textual.widgets import Static, TextArea
 
 
 SubmitResult: TypeAlias = Awaitable[None] | None
@@ -85,9 +85,9 @@ class ShellApp(App[None]):
     }
 
     #composer {
-        height: 1;
+        height: 5;
         width: 1fr;
-        min-height: 1;
+        min-height: 5;
         border: none;
         background: #0b0d12;
         color: #f3f4f6;
@@ -95,7 +95,10 @@ class ShellApp(App[None]):
     }
     """
 
-    BINDINGS = [("ctrl+c", "quit", "Quit")]
+    BINDINGS = [
+        ("ctrl+j", "submit", "Send"),
+        ("ctrl+c", "quit", "Quit"),
+    ]
 
     def __init__(self) -> None:
         super().__init__()
@@ -108,9 +111,13 @@ class ShellApp(App[None]):
         self.regions = Vertical(id="regions")
         self.loading_label = Static("", id="loading_label")
         self.composer_prompt = Static(">", id="composer_prompt")
-        self.composer = Input(
-            placeholder="Send a message. Enter submits.",
+        self.composer = TextArea(
+            "",
+            placeholder="Compose a message. Enter adds a new line. Ctrl+J submits.",
             id="composer",
+            show_line_numbers=False,
+            soft_wrap=True,
+            compact=True,
         )
         self.entry_widgets: dict[str, Static] = {}
         self.region_widgets: dict[str, Static] = {}
@@ -156,7 +163,7 @@ class ShellApp(App[None]):
 
     def set_loading(self, is_loading: bool) -> None:
         self.composer.placeholder = (
-            "Thinking..." if is_loading else "Send a message. Enter submits."
+            "Thinking..." if is_loading else "Compose a message. Enter adds a new line. Ctrl+J submits."
         )
         if is_loading:
             if self.loading_task is None or self.loading_task.done():
@@ -226,8 +233,8 @@ class ShellApp(App[None]):
         finally:
             self.submit_task = None
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
+    async def action_submit(self) -> None:
+        text = self.composer.text.strip()
         if not text:
             return
         if text in {"/exit", "exit", "quit"}:
@@ -237,7 +244,7 @@ class ShellApp(App[None]):
             self.bell()
             return
 
-        self.composer.value = ""
+        self.composer.clear()
         self.submit_task = asyncio.create_task(self._run_submit_handler(text))
 
 

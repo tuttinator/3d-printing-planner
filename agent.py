@@ -43,6 +43,24 @@ MAX_ITERATIONS_REACHED_MESSAGE = (
     "You've reached the maximum number of iterations. Generate a concise summary "
     "of the work completed and what remains."
 )
+USER_INPUT_MARKERS = (
+    "please provide",
+    "please confirm",
+    "can you share",
+    "could you share",
+    "can you confirm",
+    "could you confirm",
+    "can you clarify",
+    "could you clarify",
+    "let me know",
+    "tell me",
+    "what are the",
+    "what is the",
+    "which of these",
+    "which option",
+    "do you want",
+    "would you like",
+)
 
 
 def summarize_text(text: str, max_length: int = 240) -> str:
@@ -91,6 +109,29 @@ def serialize_request_payload(
             sort_keys=True,
         ),
     }
+
+
+def message_requests_user_input(message: Message) -> bool:
+    text = "\n".join(part.text for part in message.parts if part.text).strip()
+    if not text:
+        return False
+
+    lowered = text.lower()
+    if "user_input_required:" in lowered:
+        return True
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    if any(marker in lowered for marker in USER_INPUT_MARKERS):
+        return True
+
+    last_line = lines[-1]
+    if last_line.endswith("?"):
+        return True
+
+    return False
 
 
 class Agent:
@@ -199,6 +240,16 @@ class Agent:
         }
 
     def render_todos(self, previous_state: RunState, current_state: RunState) -> None:
+        if (
+            previous_state.todos == current_state.todos
+            and self.context.render_todos is None
+        ):
+            return
+
+        if self.context.render_todos is not None:
+            self.context.render_todos(list(current_state.todos))
+            return
+
         if previous_state.todos == current_state.todos:
             return
 
@@ -306,6 +357,10 @@ class Agent:
                             **summarize_message(message),
                         ):
                             pass
+                        if message_requests_user_input(message):
+                            run_span.set_attributes(self.state.telemetry_attributes())
+                            turn_span.set_attributes(self.state.telemetry_attributes())
+                            return message
                         reason = self.state.is_incomplete()
                         if reason is None:
                             run_span.set_attributes(self.state.telemetry_attributes())

@@ -14,6 +14,7 @@ dependencies = [
     { name = "openai" },
     { name = "prompt-toolkit" },
     { name = "pydantic-ai-slim", extra = ["google", "logfire"] },
+    { name = "python-dotenv" },
     { name = "rich" },
     { name = "textual" },
 ]
@@ -27,6 +28,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.75.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pydantic-ai-slim", extras = ["google", "logfire"], specifier = ">=1.67.0" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "rich", specifier = ">=14.3.3" },
     { name = "textual", specifier = ">=8.1.1" },
 ]

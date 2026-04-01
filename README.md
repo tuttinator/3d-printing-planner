@@ -11,6 +11,9 @@ This repo is an interactive agent for planning and iterating 3D-print designs wi
   - `validate_scad(path)`
   - `export_stl(path, output_path)`
   - `render_scad(path, output_path, ...)`
+- Provider-aware concept image generation:
+  - `generate_concept_image(prompt, output_path, provider=auto)`
+- Generated artifacts are kept under `output/` by default
 - Optional Exa-backed web search for standards or reference lookups
 
 ## Requirements
@@ -37,7 +40,7 @@ Set `OPENSCAD_DOCKER_IMAGE` if you want to use a different tag.
 ```bash
 python app.py --provider gemini --model gemini-3.1-pro
 python app.py --provider openai --model gpt-5.4
-python app.py --provider anthropic --model claude-opus-4.6
+python app.py --provider anthropic --model claude-opus-4-6
 ```
 
 Optional flags:
@@ -46,18 +49,45 @@ Optional flags:
 python app.py --provider openai --model gpt-5 --thinking-level LOW --max-iterations 30
 ```
 
+Composer controls:
+
+- `Enter` inserts a new line
+- `Ctrl+J` submits the message
+- Multi-line paste is supported
+
 ## Workflow
 
 The assistant is designed to:
 
 1. Clarify design intent, printer constraints, and dimensions.
-2. Generate a concrete task plan.
-3. Write or patch `.scad` files in the workspace.
-4. Validate them with Dockerized OpenSCAD.
-5. Export STL files and render PNG previews when needed.
+2. Write a specification markdown file in `output/`.
+3. Generate a concept image in `output/`.
+4. Generate a concrete task plan.
+5. Write or patch `.scad` files in `output/`.
+6. Validate them with Dockerized OpenSCAD.
+7. Export STL files and render PNG previews into `output/` when needed.
+
+## Example prompt
+
+```txt
+Let's build a window cover for an interior round shaped window to be printed on an Ender 3 v2.
+
+Here are the details:
+
+• Window diameter: 630 mm
+• Frame/trim diameter: ~640–650 mm (allowing for measurement tolerance and clearance)
+• Cover style: Segmented rigid blackout disk (12 radial segments, each split into 2 printable halves with backing ring support)
+• Purpose: Full light blackout for circular window (privacy + light blocking)
+• Indoor/outdoor: Indoor
+• Material: PETG (preferred for durability, heat resistance, and reduced brittleness vs PLA)
+• Max cover diameter: 220 mm per individual printed part (Ender 3 V2 build plate constraint)
+• Removable?: Yes (modular screw-assembled design with optional finger notch for removal)
+• Appearance: Minimal, matte, uniform surface (front-facing smooth skin with internal ribbing hidden on rear)
+```
 
 ## Notes
 
 - OpenSCAD execution is file-first. The agent works with `.scad` files in the workspace and validates or exports them by path.
+- The OpenSCAD runtime will try to build the configured Docker image automatically if it is missing.
 - Search is optional. The app starts normally without Exa configured.
 - CuraEngine, slicing, and post-print feedback loops are not part of this first implementation.
