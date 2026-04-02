@@ -9,7 +9,6 @@ from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
-
 SubmitResult: TypeAlias = Awaitable[None] | None
 SubmitHandler: TypeAlias = Callable[[str], SubmitResult]
 ReadyHandler: TypeAlias = Callable[[], SubmitResult]
@@ -205,7 +204,9 @@ class ShellApp(App[None]):
 
     def set_loading(self, is_loading: bool) -> None:
         self.composer.placeholder = (
-            "Thinking..." if is_loading else "Compose a message. Enter adds a new line. Ctrl+J submits."
+            "Thinking..."
+            if is_loading
+            else "Compose a message. Enter adds a new line. Ctrl+J submits."
         )
         if is_loading:
             if self.loading_task is None or self.loading_task.done():
@@ -328,7 +329,11 @@ class Shell:
 
     def _call_in_app(self, callback: Callable[[], None]) -> None:
         app_thread_id = getattr(self.app, "_thread_id", None)
-        if self.app.is_running and app_thread_id is not None and app_thread_id != threading.get_ident():
+        if (
+            self.app.is_running
+            and app_thread_id is not None
+            and app_thread_id != threading.get_ident()
+        ):
             self.app.call_from_thread(callback)
         else:
             callback()

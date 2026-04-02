@@ -12,6 +12,11 @@ from rich.table import Table
 
 from agent import Agent, clip_text
 from llm import Message, MessagePart, build_model_client, get_default_model
+from prompts import (
+    PLAN_INSTRUCTION,
+    SEARCH_SUBAGENT_SYSTEM_INSTRUCTION,
+    SYSTEM_INSTRUCTION,
+)
 from shell import Shell
 from state import AgentContext, RunConfig, RunState
 from tools import (
@@ -27,13 +32,10 @@ from tools import (
     GeneratePlanMetadata,
     MODIFY_TODO_TOOL,
     OpenScadMetadata,
-    PLAN_INSTRUCTION,
     READ_FILE_TOOL,
     ReadFileMetadata,
     RENDER_SCAD_TOOL,
-    SEARCH_SUBAGENT_SYSTEM_INSTRUCTION,
     SEARCH_WEB_TOOL,
-    SYSTEM_INSTRUCTION,
     VALIDATE_SCAD_TOOL,
     WRITE_FILE_TOOL,
     WriteFileMetadata,
