@@ -22,9 +22,7 @@ def openai_main() -> None:
 
 
 def claude_main() -> None:
-    raise SystemExit(
-        _run_with_preset(provider="anthropic", model="claude-opus-4-6")
-    )
+    raise SystemExit(_run_with_preset(provider="anthropic", model="claude-opus-4-6"))
 
 
 def gemini_main() -> None:

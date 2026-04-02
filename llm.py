@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from state import Provider
 
-
 ThinkingLevel = Literal["LOW", "MEDIUM", "HIGH"]
 
 
@@ -382,7 +381,7 @@ def _to_gemini_content(message: Message) -> Any:
                         name=part.function_call.name,
                         args=part.function_call.args,
                         id=part.function_call.call_id,
-                    )
+                    ),
                 )
             )
         if part.function_response is not None:

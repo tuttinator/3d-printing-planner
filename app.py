@@ -3,11 +3,11 @@ import asyncio
 import os
 from pathlib import Path
 
+import logfire
 from dotenv import load_dotenv
 from exa_py import Exa
-import logfire
-from rich.markdown import Markdown
 from rich import box
+from rich.markdown import Markdown
 from rich.table import Table
 
 from agent import Agent, clip_text
@@ -21,23 +21,23 @@ from shell import Shell
 from state import AgentContext, RunConfig, RunState
 from tools import (
     BASH_TOOL,
-    BashMetadata,
-    ConceptImageMetadata,
     DELEGATE_SEARCH_TOOL,
     EDIT_FILE_TOOL,
-    EditFileMetadata,
     EXPORT_STL_TOOL,
     GENERATE_CONCEPT_IMAGE_TOOL,
     GENERATE_PLAN_TOOL,
-    GeneratePlanMetadata,
     MODIFY_TODO_TOOL,
-    OpenScadMetadata,
     READ_FILE_TOOL,
-    ReadFileMetadata,
     RENDER_SCAD_TOOL,
     SEARCH_WEB_TOOL,
     VALIDATE_SCAD_TOOL,
     WRITE_FILE_TOOL,
+    BashMetadata,
+    ConceptImageMetadata,
+    EditFileMetadata,
+    GeneratePlanMetadata,
+    OpenScadMetadata,
+    ReadFileMetadata,
     WriteFileMetadata,
 )
 
@@ -233,7 +233,11 @@ def main() -> None:
         config=config,
         state=RunState(mode="plan"),
         context=context,
-        plan_tools=[GENERATE_PLAN_TOOL],
+        plan_tools=[
+            GENERATE_PLAN_TOOL,
+            DELEGATE_SEARCH_TOOL,
+            SEARCH_WEB_TOOL,
+        ],
         execute_tools=[
             READ_FILE_TOOL,
             WRITE_FILE_TOOL,

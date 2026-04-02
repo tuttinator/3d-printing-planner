@@ -523,15 +523,17 @@ async def _run_command(
             text = line.decode("utf-8", errors="replace")
             chunks.append(text)
             stripped = text.strip()
-            if (
-                stripped
-                and context is not None
-                and status_key is not None
-            ):
-                _set_activity_status(context, status_key, f"{label}: {truncate_status(stripped)}")
+            if stripped and context is not None and status_key is not None:
+                _set_activity_status(
+                    context, status_key, f"{label}: {truncate_status(stripped)}"
+                )
 
-    stdout_task = asyncio.create_task(read_stream(process.stdout, stdout_chunks, "stdout"))
-    stderr_task = asyncio.create_task(read_stream(process.stderr, stderr_chunks, "stderr"))
+    stdout_task = asyncio.create_task(
+        read_stream(process.stdout, stdout_chunks, "stdout")
+    )
+    stderr_task = asyncio.create_task(
+        read_stream(process.stderr, stderr_chunks, "stderr")
+    )
     try:
         await asyncio.wait_for(
             process.wait(),
@@ -699,7 +701,11 @@ async def generate_concept_image(
                         status_key,
                         "Gemini rate-limited, falling back to OpenAI",
                     )
-                    image_bytes, actual_provider, model_name = await generate_with_openai()
+                    (
+                        image_bytes,
+                        actual_provider,
+                        model_name,
+                    ) = await generate_with_openai()
                 else:
                     raise
         else:
@@ -893,7 +899,9 @@ async def _run_openscad(
                 f"Timed out after {DOCKER_TIMEOUT_SECONDS}s",
             )
         else:
-            _set_activity_status(context, status_key, f"Failed with exit code {returncode}")
+            _set_activity_status(
+                context, status_key, f"Failed with exit code {returncode}"
+            )
         return ToolExecutionResult(
             model_response={
                 "error": (
