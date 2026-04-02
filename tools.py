@@ -589,6 +589,17 @@ def _resolve_image_provider(
     )
 
 
+def _is_resource_exhausted_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return (
+        "429" in text
+        or "resource_exhausted" in text
+        or "resource exhausted" in text
+        or "quota" in text
+        or "rate limit" in text
+    )
+
+
 async def generate_concept_image(
     args: GenerateConceptImageArgs,
     state: RunState,
@@ -616,53 +627,92 @@ async def generate_concept_image(
     status_key = f"image: {Path(output_relative).name}"
     _set_activity_status(context, status_key, f"Generating with {provider}")
 
-    try:
-        if provider == "openai":
-            from openai import AsyncOpenAI
+    async def generate_with_openai() -> tuple[bytes, str, str]:
+        from openai import AsyncOpenAI
 
-            client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            response = await client.images.generate(
-                model="gpt-image-1",
-                prompt=args.prompt,
-                size="1536x1024",
-            )
-            image_b64 = response.data[0].b64_json
-            if not image_b64:
-                raise RuntimeError("OpenAI image response did not contain image bytes.")
-            image_bytes = base64.b64decode(image_b64)
-            model_name = "gpt-image-1"
-        else:
-            from google import genai
-            from google.genai import types
+        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = await client.images.generate(
+            model="gpt-image-1",
+            prompt=args.prompt,
+            size="1536x1024",
+        )
+        image_b64 = response.data[0].b64_json
+        if not image_b64:
+            raise RuntimeError("OpenAI image response did not contain image bytes.")
+        return base64.b64decode(image_b64), "openai", "gpt-image-1"
 
-            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model="gemini-2.5-flash-image",
-                contents=args.prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"]
-                ),
-            )
-            image_bytes: bytes | None = None
-            for candidate in response.candidates or []:
-                content = getattr(candidate, "content", None)
-                if content is None:
-                    continue
-                for part in content.parts or []:
-                    inline_data = getattr(part, "inline_data", None)
-                    if inline_data and getattr(inline_data, "data", None):
-                        image_bytes = inline_data.data
+    async def generate_with_gemini() -> tuple[bytes, str, str]:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        last_error: Exception | None = None
+        for attempt, delay_seconds in enumerate((0, 5, 15), start=1):
+            if delay_seconds:
+                _set_activity_status(
+                    context,
+                    status_key,
+                    f"Gemini retry {attempt}/3 after {delay_seconds}s backoff",
+                )
+                await asyncio.sleep(delay_seconds)
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model="gemini-2.5-flash-image",
+                    contents=args.prompt,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE", "TEXT"]
+                    ),
+                )
+                image_bytes: bytes | None = None
+                for candidate in response.candidates or []:
+                    content = getattr(candidate, "content", None)
+                    if content is None:
+                        continue
+                    for part in content.parts or []:
+                        inline_data = getattr(part, "inline_data", None)
+                        if inline_data and getattr(inline_data, "data", None):
+                            image_bytes = inline_data.data
+                            break
+                    if image_bytes is not None:
                         break
-                if image_bytes is not None:
+                if image_bytes is None:
+                    raise RuntimeError(
+                        "Gemini image response did not contain image bytes."
+                    )
+                return image_bytes, "gemini", "gemini-2.5-flash-image"
+            except Exception as error:
+                last_error = error
+                if not _is_resource_exhausted_error(error) or attempt == 3:
                     break
-            if image_bytes is None:
-                raise RuntimeError("Gemini image response did not contain image bytes.")
-            model_name = "gemini-2.5-flash-image"
+        assert last_error is not None
+        raise last_error
+
+    try:
+        chosen_provider = provider
+        if provider == "openai":
+            image_bytes, actual_provider, model_name = await generate_with_openai()
+        elif provider == "gemini":
+            try:
+                image_bytes, actual_provider, model_name = await generate_with_gemini()
+            except Exception as error:
+                if _is_resource_exhausted_error(error) and os.getenv("OPENAI_API_KEY"):
+                    _set_activity_status(
+                        context,
+                        status_key,
+                        "Gemini rate-limited, falling back to OpenAI",
+                    )
+                    image_bytes, actual_provider, model_name = await generate_with_openai()
+                else:
+                    raise
+        else:
+            raise RuntimeError(f"Unsupported image provider: {provider}")
 
         destination_path.write_bytes(image_bytes)
     except Exception as error:
-        _set_activity_status(context, status_key, f"Failed: {truncate_status(str(error))}")
+        _set_activity_status(
+            context, status_key, f"Failed: {truncate_status(str(error))}"
+        )
         return ToolExecutionResult(
             model_response={"error": f"Concept image generation failed: {error}"}
         )
@@ -671,12 +721,12 @@ async def generate_concept_image(
     return ToolExecutionResult(
         model_response={
             "result": "Concept image generated successfully.",
-            "provider": provider,
+            "provider": actual_provider,
             "model": model_name,
             "output_path": output_relative,
         },
         metadata=ConceptImageMetadata(
-            provider=provider,
+            provider=actual_provider,
             model=model_name,
             output_path=output_relative,
             prompt=args.prompt,

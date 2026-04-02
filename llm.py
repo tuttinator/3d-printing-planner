@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from abc import ABC, abstractmethod
@@ -29,6 +30,8 @@ class MessagePart:
     text: str | None = None
     function_call: FunctionCall | None = None
     function_response: FunctionResponse | None = None
+    thought: bool | None = None
+    thought_signature: bytes | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +42,12 @@ class MessagePart:
             "function_response": (
                 asdict(self.function_response)
                 if self.function_response is not None
+                else None
+            ),
+            "thought": self.thought,
+            "thought_signature": (
+                base64.b64encode(self.thought_signature).decode("ascii")
+                if self.thought_signature is not None
                 else None
             ),
         }
@@ -232,7 +241,13 @@ class GeminiModelClient(ModelClient):
         parts: list[MessagePart] = []
         for part in candidate.parts:
             if part.text:
-                parts.append(MessagePart(text=part.text))
+                parts.append(
+                    MessagePart(
+                        text=part.text,
+                        thought=getattr(part, "thought", None),
+                        thought_signature=getattr(part, "thought_signature", None),
+                    )
+                )
             elif part.function_call:
                 parts.append(
                     MessagePart(
@@ -240,7 +255,9 @@ class GeminiModelClient(ModelClient):
                             name=part.function_call.name,
                             args=dict(part.function_call.args or {}),
                             call_id=getattr(part.function_call, "id", None),
-                        )
+                        ),
+                        thought=getattr(part, "thought", None),
+                        thought_signature=getattr(part, "thought_signature", None),
                     )
                 )
         return Message(role="assistant", parts=parts)
@@ -349,21 +366,33 @@ def _to_gemini_content(message: Message) -> Any:
     parts: list[Any] = []
     for part in message.parts:
         if part.text:
-            parts.append(types.Part.from_text(text=part.text))
+            parts.append(
+                types.Part(
+                    text=part.text,
+                    thought=part.thought,
+                    thoughtSignature=part.thought_signature,
+                )
+            )
         if part.function_call is not None:
             parts.append(
                 types.Part(
-                    function_call=types.FunctionCall(
+                    thought=part.thought,
+                    thoughtSignature=part.thought_signature,
+                    functionCall=types.FunctionCall(
                         name=part.function_call.name,
                         args=part.function_call.args,
+                        id=part.function_call.call_id,
                     )
                 )
             )
         if part.function_response is not None:
             parts.append(
-                types.Part.from_function_response(
-                    name=part.function_response.name,
-                    response=part.function_response.response,
+                types.Part(
+                    functionResponse=types.FunctionResponse(
+                        name=part.function_response.name,
+                        response=part.function_response.response,
+                        id=part.function_response.call_id,
+                    )
                 )
             )
     return types.Content(role=role, parts=parts)

@@ -1,6 +1,8 @@
 # 3D Print Planning Assistant
 
-This repo is an interactive agent for planning and iterating 3D-print designs with OpenSCAD. It keeps the original planning/execution loop, but the workflow is now centered on design requirements, SCAD generation, validation, STL export, and renders.
+This repo is an interactive agent for planning and iterating 3D-print designs with OpenSCAD. It keeps the planning/execution loop from the workshop on [Building your own Deep Research Agent](https://github.com/hugobowne/build-your-own-deep-research-agent) with Hugo and Ivan, but the workflow is now centered on design requirements, SCAD generation, validation, STL export, and renders.
+
+A huge thank you to Hugo and Ivan for the inspiration around the agent runtime / harness.
 
 ## Features
 
@@ -41,6 +43,28 @@ Set `OPENSCAD_DOCKER_IMAGE` if you want to use a different tag.
 python app.py --provider gemini --model gemini-3.1-pro
 python app.py --provider openai --model gpt-5.4
 python app.py --provider anthropic --model claude-opus-4-6
+```
+
+`uv run` preset shortcuts:
+
+```bash
+uv run planner-openai
+uv run planner-claude
+uv run planner-gemini
+```
+
+They expand to:
+
+```bash
+uv run app.py --provider openai --model gpt-5.4
+uv run app.py --provider anthropic --model claude-opus-4-6
+uv run app.py --provider gemini --model gemini-3.1-pro-preview
+```
+
+You can still pass extra flags after the preset:
+
+```bash
+uv run planner-openai --max-iterations 20
 ```
 
 Optional flags:

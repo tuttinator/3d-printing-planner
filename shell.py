@@ -53,6 +53,40 @@ class ShellApp(App[None]):
         margin-bottom: 1;
     }
 
+    #todo_region_scroll {
+        height: 12;
+        min-height: 12;
+        max-height: 12;
+        margin-top: 1;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-background: #0f1117;
+        scrollbar-color: #3b4457;
+    }
+
+    #jobs_region_scroll {
+        height: 10;
+        min-height: 10;
+        max-height: 10;
+        margin-top: 1;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-background: #0f1117;
+        scrollbar-color: #3b4457;
+    }
+
+    #region-todos {
+        height: auto;
+        padding-left: 1;
+        color: #dbe2ea;
+    }
+
+    #region-jobs {
+        height: auto;
+        padding-left: 1;
+        color: #dbe2ea;
+    }
+
     .region {
         height: auto;
         margin-bottom: 1;
@@ -108,6 +142,10 @@ class ShellApp(App[None]):
         self.loading_task: asyncio.Task[None] | None = None
         self.transcript_scroll = VerticalScroll(id="transcript_scroll")
         self.transcript_flow = Vertical(id="transcript_flow")
+        self.todo_region_scroll = VerticalScroll(id="todo_region_scroll")
+        self.todo_region_widget = Static(id="region-todos")
+        self.jobs_region_scroll = VerticalScroll(id="jobs_region_scroll")
+        self.jobs_region_widget = Static(id="region-jobs")
         self.regions = Vertical(id="regions")
         self.loading_label = Static("", id="loading_label")
         self.composer_prompt = Static(">", id="composer_prompt")
@@ -127,6 +165,10 @@ class ShellApp(App[None]):
             with Vertical():
                 with self.transcript_scroll:
                     yield self.transcript_flow
+                with self.todo_region_scroll:
+                    yield self.todo_region_widget
+                with self.jobs_region_scroll:
+                    yield self.jobs_region_widget
                 yield self.regions
                 with Container(id="composer_wrap"):
                     yield self.loading_label
@@ -176,6 +218,11 @@ class ShellApp(App[None]):
         self.loading_label.update("")
 
     async def ensure_region(self, name: str) -> Static:
+        if name == "todos":
+            return self.todo_region_widget
+        if name == "jobs":
+            return self.jobs_region_widget
+
         existing = self.region_widgets.get(name)
         if existing is not None:
             return existing
@@ -188,8 +235,18 @@ class ShellApp(App[None]):
     async def update_region(self, name: str, content: RenderableType | object) -> None:
         widget = await self.ensure_region(name)
         widget.update(content)
+        if name == "todos":
+            self.todo_region_scroll.scroll_end(animate=False)
+        if name == "jobs":
+            self.jobs_region_scroll.scroll_end(animate=False)
 
     def clear_region(self, name: str) -> None:
+        if name == "todos":
+            self.todo_region_widget.update(Text(""))
+            return
+        if name == "jobs":
+            self.jobs_region_widget.update(Text(""))
+            return
         widget = self.region_widgets.get(name)
         if widget is not None:
             widget.update(Text(""))
